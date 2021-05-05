@@ -65,14 +65,19 @@ def sqlite3_add_record(db_path:str, table:str, column_vals:list):
     add new records in sqlite3 table
     """
     column_indices, column_names, column_type, column_notnull, column_pk = sqlite3_get_tableinfo(db_path, table)
-    if not len(column_names) == len(column_vals):
-        raise ValueError(f"Unexpected length for column_vals; expect {len(column_names)}: {column_names}")    
-    clear_output()
-    column_names_str = ','.join([str(name) for name in column_names])
-    column_vals_str = ','.join([str(val) for val in column_vals])
-    statement = f"INSERT INTO {table} ({column_names_str}) VALUES ({column_vals_str})"
-    print(statement)
-    cursor = sqlite3_safe_execute(db_path, statement)
+    try:
+        if not len(column_names) == len(column_vals):
+            raise ValueError(f"Unexpected length for column_vals; expect {len(column_names)}: {column_names}")    
+        column_names_str = ','.join([str(name) for name in column_names])
+        column_vals_str = ','.join([str(val) for val in column_vals])
+        statement = f"INSERT INTO {table} ({column_names_str}) VALUES ({column_vals_str})"
+        cursor = sqlite3_safe_execute(db_path, statement)
+    except Exception as e:
+        error_message = f"{type(e).__name__}: {str(e)}"
+        print("Failed to add record to table. If Integrity error is found, "
+              "this could be caused by adding a record with duplicated primary key, "
+              "or the table does not have adequate primary key structure.")
+        print(error_message)
                 
 def sqlite3_update_record(db_path:str, table:str, primary_keys:list, update_vals:list):     
     """
