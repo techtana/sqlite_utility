@@ -1,10 +1,19 @@
 """
 Utility for using sqlite3 built on top of sqlite3
 """
-
 import sqlite3
 import contextlib
 import json
+
+
+def replace_specialchars2underscore(string):
+    import re
+    return re.sub("'|-| ", "_", str(string))
+
+def replace_single2doublequote(string):
+    import re
+    return re.sub(r"\'|'", "", str(string))
+
 
 def sqlite3_safe_execute(db_path:str, statement:str, fetch:bool=False):
     """
@@ -58,9 +67,11 @@ def sqlite3_add_record(db_path:str, table:str, column_vals:list):
     column_indices, column_names, column_type, column_notnull, column_pk = sqlite3_get_tableinfo(db_path, table)
     if not len(column_names) == len(column_vals):
         raise ValueError(f"Unexpected length for column_vals; expect {len(column_names)}: {column_names}")    
+    clear_output()
     column_names_str = ','.join([str(name) for name in column_names])
     column_vals_str = ','.join([str(val) for val in column_vals])
-    statement = f"INSERT OR IGNORE INTO {table} ({column_names_str}) VALUES ({column_vals_str})"
+    statement = f"INSERT INTO {table} ({column_names_str}) VALUES ({column_vals_str})"
+    print(statement)
     cursor = sqlite3_safe_execute(db_path, statement)
                 
 def sqlite3_update_record(db_path:str, table:str, primary_keys:list, update_vals:list):     
@@ -90,6 +101,8 @@ def sqlite3_parse_datatypes(dtype):
     PARSE column_types into valid SQLITE DATA TYPE
     
     ONLY SUPPORT: TEXT, NUM, INT, REAL, "" (BLOB: empty string)
+    (2021-05-05) all TEXT will now become a BLOB. This is to prevent invalid quotation characters. 
+                 all string will be processed by json.dumps() to prevent this issue.
     DATA TYPE documentation at https://sqlite.org/lang_createtable.html
     """
     if not type(dtype) == type:
@@ -99,18 +112,8 @@ def sqlite3_parse_datatypes(dtype):
         return "INT"
     elif dtype == float:
         return "REAL"
-    elif dtype == str:
-        return "TEXT"
-    
     return ""
 
-def replace_specialchars2underscore(string):
-    import re
-    return re.sub("'|-| ", "_", str(string))
-
-def replace_single2doublequote(string):
-    import re
-    return re.sub(r"\'|'", "", str(string))
 
 def sqlite3_json_to_table(db_path:str, new_table:str, json_list:list, PK_list:list):     
     """
@@ -147,8 +150,8 @@ def sqlite3_json_to_table(db_path:str, new_table:str, json_list:list, PK_list:li
             columns_vals_zip = list(zip(columns_vals, column_types_parsed))
             # Convert data object that is not supported by SQLITE to string `json.dumps`
             # They can be parsed back using `json.loads` 
-            columns_vals_converted = [f"'{json.dumps(pair[0])}'" if pair[1]=="" 
-                                      else f"'{replace_single2doublequote(pair[0])}'" if pair[1]=="TEXT" 
+            columns_vals_converted = [f"'{json.dumps(replace_single2doublequote(pair[0]))}'" if pair[1]=="" 
+#                                       else f"'{replace_single2doublequote(pair[0])}'" if pair[1]=="TEXT" 
                                       else pair[0] 
                                       for pair in columns_vals_zip]
             sqlite3_add_record(db_path, new_table, columns_vals_converted)
@@ -187,3 +190,10 @@ def sqlite3_parse_table2dataframe(db_path, table):
         elif item[1]=="REAL":
             df[item[0]] = df[item[0]].apply(lambda x: float(x))
     return df
+
+def sqlite3_get_primarykeys(db_path, table):
+    """
+    Get list of primary keys in order
+    """
+    column_indices, column_names, column_type, column_notnull, column_pk = sqlite3_get_tableinfo(db_path, new_table)
+    return [col[0] for col in sorted(zip(column_names,column_pk), key = lambda x: x[1]) if col[1]>0]
