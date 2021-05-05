@@ -1,11 +1,12 @@
 """
 Utility for using sqlite3 built on top of sqlite3
 """
+
 import sqlite3
 import contextlib
 import json
 
-def sqlite3_safe_execute(db_path:str, table:str, statement:str):
+def sqlite3_safe_execute(db_path:str, statement:str, fetch:bool=False):
     """
     execute statement with auto-commit and connection/cursor auto-close
     
@@ -15,9 +16,15 @@ def sqlite3_safe_execute(db_path:str, table:str, statement:str):
     with contextlib.closing(sqlite3.connect(db_path)) as conn: # auto-closes
         with conn: # auto-commits
             with contextlib.closing(conn.cursor()) as cursor: # auto-closes
-                return cursor.execute(statement)
+                cur = cursor.execute(statement)
+                if fetch==True:
+                    return cur.fetchall()
+                else:
+                    # you cannot operate on closed cursor.
+                    # this return is not useful
+                    return cur
             
-def sqlite3_get_tableinfo(db_path:str, table:str)
+def sqlite3_get_tableinfo(db_path:str, table:str):
     """
     Get schema info from sqlite3 table
     
@@ -33,8 +40,7 @@ def sqlite3_get_tableinfo(db_path:str, table:str)
     TODO: there should be a check of data type. Link to data types https://www.sqlite.org/datatype3.html
     """
     statement = f"PRAGMA table_info('{table}')"
-    cursor = sqlite3_safe_execute(db_path, table, statement)
-    table_info = cursor.fetchall()
+    table_info = sqlite3_safe_execute(db_path, statement, fetch=True)
     table_info_transpose = tuple(map(list, zip(*table_info)))
     column_indices = table_info_transpose[0]
     column_names = table_info_transpose[1]
@@ -51,9 +57,11 @@ def sqlite3_add_record(db_path:str, table:str, column_vals:list):
     """
     column_indices, column_names, column_type, column_notnull, column_pk = sqlite3_get_tableinfo(db_path, table)
     if not len(column_names) == len(column_vals):
-        raise ValueError(f"Unexpected length for column_vals; expect {len(column_names)}: {column_names}")
-    statement = f"INSERT INTO {table} ({columns_str}) VALUES ({column_vals});"
-    cursor = sqlite3_safe_execute(db_path, table, statement)
+        raise ValueError(f"Unexpected length for column_vals; expect {len(column_names)}: {column_names}")    
+    column_names_str = ','.join([str(name) for name in column_names])
+    column_vals_str = ','.join([str(val) for val in column_vals])
+    statement = f"INSERT OR IGNORE INTO {table} ({column_names_str}) VALUES ({column_vals_str})"
+    cursor = sqlite3_safe_execute(db_path, statement)
                 
 def sqlite3_update_record(db_path:str, table:str, primary_keys:list, update_vals:list):     
     """
@@ -75,7 +83,7 @@ def sqlite3_update_record(db_path:str, table:str, primary_keys:list, update_vals
           primary_key2 = 'some value',
           primary_key3 = 'some value';
     """
-    cursor = sqlite3_safe_execute(db_path, table, statement)
+    cursor = sqlite3_safe_execute(db_path, statement)
 
 def sqlite3_parse_datatypes(dtype):
     """
@@ -96,6 +104,14 @@ def sqlite3_parse_datatypes(dtype):
     
     return ""
 
+def replace_specialchars2underscore(string):
+    import re
+    return re.sub("'|-| ", "_", str(string))
+
+def replace_single2doublequote(string):
+    import re
+    return re.sub(r"\'|'", "", str(string))
+
 def sqlite3_json_to_table(db_path:str, new_table:str, json_list:list, PK_list:list):     
     """
     import JSON into sqlite3 database as new table
@@ -107,28 +123,67 @@ def sqlite3_json_to_table(db_path:str, new_table:str, json_list:list, PK_list:li
     if not all([True if isinstance(item,dict) else False for item in json_list]):
         raise ValueError("json_list is not a valid list of dict")
     
-    column_names = json_list[0].keys()
-    column_types = [type(json_list[0][key]) for key in json_list[0].keys()]
+    column_names = list(json_list[0].keys())
+    column_types = [type(json_list[0][key]) for key in column_names]
     column_types_parsed = [sqlite3_parse_datatypes(dtype) for dtype in column_types]
     column_notnull = ["NOT NULL" if col in PK_list else "" for col in column_names]
 
     # validate PK_list : must exists in JSON dict keys
-    if not all([True if col in PK_list else False for col in column_names]):
-        raise ValueError("json_list is not a valid list of dict")
+    if not all([True if col in column_names else False for col in PK_list]):
+        raise ValueError("some items in PK_list does not exist as dict keys in json_list")
     
     # create a new table
-    column_definition = [" ".join(list(zip(column_names, column_types_parsed, column_notnull)))]
-    statement = f""" CREATE TABLE {new_table}({",".join([column_names])},PRIMARY KEY ({','.join(PK_list)})) """
-    cursor = sqlite3_safe_execute(db_path, table, statement)
-    print("New table added to database")    
+    column_names_parsed = [replace_specialchars2underscore(string) for string in column_names]
+    column_definition = [" ".join(line) for line in list(zip(column_names_parsed, column_types_parsed, column_notnull))]
+    statement = f""" CREATE TABLE {new_table}({",".join(column_definition)},PRIMARY KEY ({','.join(PK_list)})) """
+    print(statement)
+    cursor = sqlite3_safe_execute(db_path, statement)
+    print("New table added to database")  
     
-    # import JSON content to database table
-    for item in json_list:
-        columns_vals = [item[key] for key in column_names]
-        columns_vals_zip = list(zip(columns_vals, column_types_parsed))
-        # Convert data object that is not supported by SQLITE to string `json.dumps`
-        # They can be parsed back using `json.loads` 
-        columns_vals_converted = [json.dumps(pair[0]) if pair[1]=="" else pair[0] for pair in columns_vals_zip]
-        sqlite3_add_record(db_path, new_table, columns_vals_converted)
+    try:
+        # import JSON content to database table
+        for item in json_list:
+            columns_vals = [item[key] for key in column_names]
+            columns_vals_zip = list(zip(columns_vals, column_types_parsed))
+            # Convert data object that is not supported by SQLITE to string `json.dumps`
+            # They can be parsed back using `json.loads` 
+            columns_vals_converted = [f"'{json.dumps(pair[0])}'" if pair[1]=="" 
+                                      else f"'{replace_single2doublequote(pair[0])}'" if pair[1]=="TEXT" 
+                                      else pair[0] 
+                                      for pair in columns_vals_zip]
+            sqlite3_add_record(db_path, new_table, columns_vals_converted)
+
+        print("JSON data imported into SQLITE table")
         
-    print("JSON data imported into SQLITE table")
+    except Exception as e:
+        # drop the new table if adding record fails
+        error_message = f"{type(e).__name__}: {str(e)}"
+        print(error_message)
+        statement = f""" DROP TABLE {new_table} """
+        cursor = sqlite3_safe_execute(db_path, statement)
+
+def sqlite3_parse_table2dataframe(db_path, table):
+    """
+    Convert TEXT->str, INT->int, REAL->float, ''->json.loads()
+    This is assuming that all BLOBS are text string converted by json.dumps().
+    json.loads() will convert these objects back to original data objects.
+    """
+    import pandas as pd
+    with contextlib.closing(sqlite3.connect(db_path)) as conn: # auto-closes
+        df = pd.read_sql(f"SELECT * from {table}", conn)
+    
+    # get data type
+    column_indices, column_names, column_type, column_notnull, column_pk = sqlite3_get_tableinfo(db_path, table)
+    column_definition_zip = list(zip(column_names, column_type))
+    
+    # parse data type in each column
+    for item in column_definition_zip:
+        if item[1]=="":
+            df[item[0]] = df[item[0]].apply(lambda x: json.loads(x))
+        elif item[1]=="TEXT":
+            df[item[0]] = df[item[0]].apply(lambda x: str(x))
+        elif item[1]=="INT":
+            df[item[0]] = df[item[0]].apply(lambda x: int(x))
+        elif item[1]=="REAL":
+            df[item[0]] = df[item[0]].apply(lambda x: float(x))
+    return df
